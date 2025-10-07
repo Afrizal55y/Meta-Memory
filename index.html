@@ -1,0 +1,433 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+
+// META MEMORY — RIALO EDITION
+// Single-file React component, drop into a Next.js page or any React app.
+// Tailwind-friendly classes, minimal deps. No backend required.
+// Theme: cream background + black UI to echo rialo.io
+
+// ---------------------- CONFIG ----------------------
+const TOTAL_ROUNDS = 8; // total levels
+const START_LENGTH = 3; // how many tiles to remember at round 1
+const MAX_LENGTH = 7;   // cap difficulty
+const BASE_MEMORIZE_SEC = 2.2; // base flash time
+const EXTRA_PER_TILE_SEC = 0.5; // extra time per tile
+
+// Brand-ish palette (soft cream + ink black)
+const COLORS = {
+  bg: "#EFE9DD", // soft cream
+  card: "#111111",
+  ink: "#0b0b0b",
+  outline: "#191919",
+  subtle: "#3b3b3b",
+  accent: "#E4D7BF",
+};
+
+// Fact bank — short, sticky fragments themed around knowledge/AI/verification.
+// Keep each under ~16 chars so they fit nicely on mobile.
+const FACTS = [
+  "agent rank",
+  "proof > promise",
+  "verifiable",
+  "open challenge",
+  "multiplayer ai",
+  "neutral score",
+  "trustless",
+  "signal > noise",
+  "on-chain trail",
+  "citations",
+  "source check",
+  "anti-hoax",
+  "data lineage",
+  "peer review",
+  "reason > hype",
+  "zk attest",
+  "tee sandbox",
+  "eval set",
+  "gold label",
+  "benchmark",
+  "explain",
+  "ground truth",
+  "reproduce",
+  "scorecard",
+  "delta",
+  "baseline",
+  "ablation",
+  "ensemble",
+  "context",
+  "token",
+  "vector",
+  "retrieval",
+  "graph link",
+  "consensus",
+  "entropy",
+  "gradient",
+  "epoch",
+  "batch",
+  "prompt",
+  "policy",
+  "reward",
+  "rollout",
+  "safety",
+  "alignment",
+  "trace",
+];
+
+// -------------- helpers --------------
+function shuffle<T>(arr: T[]): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function sampleUnique<T>(pool: T[], n: number): T[] {
+  const copy = pool.slice();
+  if (n > copy.length) n = copy.length;
+  const out: T[] = [];
+  while (out.length < n && copy.length) {
+    const idx = Math.floor(Math.random() * copy.length);
+    out.push(copy.splice(idx, 1)[0]);
+  }
+  return out;
+}
+
+// Score formula: base on length + speed bonus against a par time.
+function computeScore(len: number, recallMs: number, parSec: number) {
+  const base = len * 100;
+  const parMs = parSec * 1000;
+  const bonus = Math.max(0, Math.round((parMs - recallMs) / 20));
+  return base + bonus; // never negative
+}
+
+// Local high score (client only)
+function loadHighScore() {
+  if (typeof window === "undefined") return 0;
+  const s = window.localStorage.getItem("rialo_meta_memory_highscore");
+  return s ? Number(s) : 0;
+}
+function saveHighScore(v: number) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem("rialo_meta_memory_highscore", String(v));
+}
+
+// ---------------------- COMPONENT ----------------------
+export default function RIALO_MetaMemory() {
+  const [username, setUsername] = useState("");
+  const [started, setStarted] = useState(false);
+
+  const [round, setRound] = useState(1);
+  const [sequence, setSequence] = useState<string[]>([]);
+  const [shuffled, setShuffled] = useState<string[]>([]);
+
+  const [phase, setPhase] = useState<"intro" | "memorize" | "recall" | "between" | "gameover">("intro");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [mistake, setMistake] = useState(false);
+  const [score, setScore] = useState(0);
+  const [roundScore, setRoundScore] = useState(0);
+  const [highScore, setHighScore] = useState(loadHighScore());
+
+  const [parTimeSec, setParTimeSec] = useState(3);
+  const startRecallAt = useRef<number | null>(null);
+
+  // Difficulty scaling
+  const targetLen = useMemo(() => Math.min(MAX_LENGTH, START_LENGTH + (round - 1)), [round]);
+
+  // Start game
+  const startGame = () => {
+    setStarted(true);
+    setRound(1);
+    setScore(0);
+    setPhase("memorize");
+  };
+
+  // Create each round
+  useEffect(() => {
+    if (!started) return;
+    if (phase !== "memorize") return;
+
+    const seq = sampleUnique(FACTS, targetLen);
+    setSequence(seq);
+    setShuffled(shuffle(seq));
+    setSelected([]);
+    setMistake(false);
+
+    const p = BASE_MEMORIZE_SEC + targetLen * EXTRA_PER_TILE_SEC;
+    setParTimeSec(p);
+
+    // after flash -> recall
+    const t = setTimeout(() => {
+      startRecallAt.current = performance.now();
+      setPhase("recall");
+    }, p * 1000);
+
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [round, started, phase]);
+
+  // Handle card pick
+  function pickCard(v: string) {
+    if (phase !== "recall") return;
+    if (selected.includes(v)) return; // ignore double clicks
+
+    const idx = selected.length; // expected index
+    const isCorrect = sequence[idx] === v;
+    const next = [...selected, v];
+    setSelected(next);
+
+    if (!isCorrect) {
+      // end of round with fail
+      setMistake(true);
+      const endMs = performance.now() - (startRecallAt.current ?? performance.now());
+      const sc = Math.max(0, Math.round(targetLen * 100 - endMs / 10));
+      setRoundScore(sc);
+      setScore((s) => s + sc);
+      setPhase("between");
+      return;
+    }
+
+    // If finished perfectly
+    if (next.length === sequence.length) {
+      const endMs = performance.now() - (startRecallAt.current ?? performance.now());
+      const sc = computeScore(sequence.length, endMs, parTimeSec);
+      setRoundScore(sc);
+      setScore((s) => s + sc);
+      setPhase("between");
+    }
+  }
+
+  // Next round logic
+  function nextRound() {
+    if (round >= TOTAL_ROUNDS) {
+      const newHigh = Math.max(highScore, score);
+      setHighScore(newHigh);
+      saveHighScore(newHigh);
+      setPhase("gameover");
+    } else {
+      setRound((r) => r + 1);
+      setPhase("memorize");
+    }
+  }
+
+  function restart() {
+    setRound(1);
+    setScore(0);
+    setPhase("memorize");
+  }
+
+  // Grid sizing – adaptive based on count
+  const gridCols = useMemo(() => {
+    const len = shuffled.length || targetLen;
+    if (len <= 4) return "grid-cols-2";
+    if (len <= 6) return "grid-cols-3";
+    return "grid-cols-4";
+  }, [shuffled.length, targetLen]);
+
+  return (
+    <div className="min-h-screen w-full" style={{ background: COLORS.bg }}>
+      {/* Top bar */}
+      <div className="mx-auto max-w-5xl px-4 pt-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <LogoRialo />
+            <div className="leading-tight">
+              <div className="text-sm uppercase tracking-[0.14em] text-neutral-700">rialo meta memory</div>
+              <div className="text-[28px] font-semibold text-black -mt-1">signal your recall</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 text-black">
+            <Badge label={`round ${round}/${TOTAL_ROUNDS}`} />
+            <Badge label={`score ${score}`} />
+            <Badge label={`best ${highScore}`} subtle />
+          </div>
+        </div>
+      </div>
+
+      {/* Stage */}
+      <div className="mx-auto mt-8 max-w-5xl px-4 pb-24">
+        {/* Intro overlay */}
+        <AnimatePresence>
+          {phase === "intro" && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex min-h-[60vh] items-center justify-center"
+            >
+              <div className="w-full max-w-xl rounded-2xl border border-neutral-300 bg-white/60 p-6 shadow-sm backdrop-blur">
+                <div className="mb-3 text-2xl font-semibold text-black">Meta Memory</div>
+                <p className="mb-4 text-neutral-700">Memorize the card order as it appears. Then select them <span className="font-medium text-black">in the same order</span> as fast and as accurately as you can. The sequence length grows each round.</p>
+                <div className="mb-2 text-sm text-neutral-600">Username (optional)</div>
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Your name..."
+                  className="mb-4 w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 text-black outline-none ring-0 focus:border-black"
+                />
+                <button
+                  onClick={startGame}
+                  className="w-full rounded-xl bg-black px-4 py-3 text-white transition active:scale-[0.99]"
+                >
+                  Start Game
+                </button>
+                <p className="mt-3 text-center text-xs text-neutral-600"> Tip: use a fun <span className="font-medium text-black">mnemonic</span> to link the words. </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Memorize phase */}
+        {phase === "memorize" && (
+          <div>
+            <HeaderHint title="remember the order" subtitle={`show ${sequence.length} cards — ${ (BASE_MEMORIZE_SEC + targetLen * EXTRA_PER_TILE_SEC).toFixed(1)} s`} />
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
+              {sequence.map((v, i) => (
+                <MemoTile key={v} index={i + 1} label={v} reveal />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recall phase */}
+        {phase === "recall" && (
+          <div>
+            <HeaderHint title="click in order" subtitle={`length ${sequence.length} • par ${(parTimeSec).toFixed(1)} s`} />
+            <div className={`mt-6 grid gap-3 ${gridCols}`}>
+              {shuffled.map((v) => {
+                const picked = selected.includes(v);
+                const order = picked ? selected.indexOf(v) + 1 : null;
+                return (
+                  <button
+                    key={v}
+                    onClick={() => pickCard(v)}
+                    className={`relative rounded-2xl border border-neutral-300 bg-white px-4 py-6 text-left transition ${picked ? "opacity-80" : "hover:shadow"}`}
+                  >
+                    <div className="text-[15px] font-medium text-black">{v}</div>
+                    {order && (
+                      <div className="absolute -right-2 -top-2 rounded-full bg-black px-2 py-1 text-xs text-white">{order}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-4 text-sm text-neutral-600">progress: {selected.length}/{sequence.length}</div>
+          </div>
+        )}
+
+        {/* Between rounds overlay */}
+        <AnimatePresence>
+          {phase === "between" && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="mt-4"
+            >
+              <div className="rounded-2xl border border-neutral-300 bg-white/70 p-6 shadow-sm backdrop-blur">
+                <div className="flex items-center justify-between">
+                  <div className="text-xl font-semibold text-black">{mistake ? "so close" : "nice!"}</div>
+                  <Badge label={`+${roundScore}`} />
+                </div>
+                <div className="mt-3 text-neutral-700">
+                  {mistake ? (
+                    <div>
+                      Correct order:
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {sequence.map((s, i) => (
+                          <span key={s} className="rounded-full bg-black px-3 py-1 text-xs text-white">{i + 1}. {s}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      Speed + accuracy gives bonus points. Keep the rhythm.
+                    </div>
+                  )}
+                </div>
+                <div className="mt-5 flex items-center gap-3">
+                  <button onClick={nextRound} className="rounded-xl bg-black px-4 py-3 text-white">{round >= TOTAL_ROUNDS ? "View Results" : "Next Round"}</button>
+                  <button onClick={restart} className="rounded-xl border border-black px-4 py-3 text-black">Restart</button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Game over */}
+        <AnimatePresence>
+          {phase === "gameover" && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-4">
+              <div className="rounded-2xl border border-neutral-300 bg-white/70 p-6 shadow-sm backdrop-blur">
+                <div className="mb-2 text-2xl font-semibold text-black">Finished, {username || "player"}!</div>
+                <div className="text-neutral-700">Final score <span className="font-semibold text-black">{score}</span>. Best <span className="font-semibold text-black">{highScore}</span>.</div>
+                <div className="mt-5 flex items-center gap-3">
+                  <button onClick={restart} className="rounded-xl bg-black px-4 py-3 text-white">Play Again</button>
+                  <button onClick={() => setPhase("intro")} className="rounded-xl border border-black px-4 py-3 text-black">Back to Menu</button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Footer */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 select-none p-4 text-center text-[11px] text-neutral-600">
+        built for rialo.io vibe • proof over promises
+      </div>
+    </div>
+  );
+}
+
+// ---------------------- UI bits ----------------------
+function Badge({ label, subtle = false }: { label: string; subtle?: boolean }) {
+  return (
+    <div
+      className={`rounded-full border px-3 py-1 text-xs ${
+        subtle ? "border-neutral-300 bg-white/40 text-neutral-700" : "border-black bg-black text-white"
+      }`}
+    >
+      {label}
+    </div>
+  );
+}
+
+function HeaderHint({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <div className="rounded-2xl border border-neutral-300 bg-white/60 p-4 text-black">
+      <div className="text-sm uppercase tracking-[0.14em] text-neutral-700">{title}</div>
+      <div className="text-[20px] font-semibold -mt-0.5">{subtitle}</div>
+    </div>
+  );
+}
+
+function MemoTile({ index, label, reveal }: { index: number; label: string; reveal?: boolean }) {
+  return (
+    <div className="relative rounded-2xl border border-neutral-300 bg-white p-6 text-black shadow-sm">
+      <div className="text-sm text-neutral-600">{index}</div>
+      <div className="mt-2 text-lg font-semibold">{label}</div>
+      {reveal && (
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: "100%" }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+          className="absolute bottom-0 left-0 h-1 rounded-b-2xl bg-black"
+        />
+      )}
+    </div>
+  );
+}
+
+function LogoRialo() {
+  // simple abstract R-like blob to hint the brand; pure SVG
+  return (
+    <svg width="40" height="40" viewBox="0 0 100 100" className="rounded-xl" aria-hidden>
+      <rect x="0" y="0" width="100" height="100" rx="18" fill="#F2EBDD" stroke="#E6DAC5" />
+      <path
+        d="M25 44c-8 0-12-5-12-12s5-12 12-12h20c8 0 12 5 12 12s-4 12-12 12H25zm35-6c0-7 5-12 12-12s12 5 12 12-5 12-12 12h-9c-7 0-15 6-15 13v17c0 7-5 12-12 12s-12-5-12-12V63c0-14 13-25 28-25h8z"
+        fill="#0B0B0B"
+      />
+    </svg>
+  );
+}
