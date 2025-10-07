@@ -3,9 +3,6 @@
 A tiny, fast memory game with the **Rialo** vibe (soft cream + ink black).
 Memorize the order, then click cards in the same sequence. Speed + accuracy = score.
 Proof over promises, but with pixels.
-
-![screenshot](./public/cover.png) <!-- optional -->
-
 ## Features
 - 🧠 Progressive difficulty (sequence grows each round)
 - ⚡ Par-time bonus: play fast, score higher
